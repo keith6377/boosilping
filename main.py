@@ -34,74 +34,6 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 
-# @app.get("/html", response_class=HTMLResponse)
-# def html(request: Request):
-#     cur = conn.cursor()
-#     sql = """SELECT * FROM financialstatements6;"""
-#         # # 쿼리 실행
-#     # 임시저장소한테 실행해달라고 요청
-#     cur.execute(sql)
-#     data = cur.fetchall()
-
-#     # # 변경사항 커밋
-#     conn.commit()
-
-#     return templates.TemplateResponse("test.html", {"request": request, "data": data[0]})
-
-# if __name__ == "__main__":
-#     uvicorn.run(app, host="127.0.0.1", port=8000)
-
-
-#기업분석 페이지
-# @app.get("/firm", response_class=HTMLResponse)
-# def firm_dashboard(request: Request):
-#     cur = conn.cursor()
-#     sql = """
-#         SELECT idx, name, industry, size, grade, year,
-#                operating_cf_to_assets,
-#                operating_cf_to_debt,
-#                operating_cf_to_sales,
-#                pd, score, debt_ratio, roe, roa, roic, assets,
-#                sales_growth, profit_growth, current_ratio, quick_ratio,
-#                inventory_turnover, receivables_turnover, asset_turnover,
-#                fixed_asset_turnover, operating_cf, industry_avg_pd, industry_avg_roe,
-#                industry_avg_roa, industry_avg_debt_ratio, gdp_growth,
-#                inflation, unemployment, interest_rate,
-#                company_code, stock_code, established_date, ceo
-#         FROM financialstatements6;
-#     """
-#     cur.execute(sql)
-#     rows = cur.fetchall()
-#     colnames = [desc[0] for desc in cur.description]
-#     cur.close()
-
-#     def convert(value):
-#         if isinstance(value, Decimal):
-#             return float(value)
-#         return value
-
-#     data = [dict(zip(colnames, (convert(v) for v in row))) for row in rows]
-
-#     firms = {}
-#     for row in data:
-#         key = row["idx"]
-#         if key not in firms:
-#             firms[key] = row.copy()
-#             firms[key]["cashflow"] = {"years": [], "operating": [], "investing": [], "financing": []}
-#         firms[key]["cashflow"]["years"].append(row["year"])
-#         firms[key]["cashflow"]["operating"].append(row.get("operating_cf_to_assets", 0))
-#         firms[key]["cashflow"]["investing"].append(row.get("operating_cf_to_debt", 0))
-#         firms[key]["cashflow"]["financing"].append(row.get("operating_cf_to_sales", 0))
-
-#         firms[key]["inventory_turnover"] = row.get("inventory_turnover") or 0
-#         firms[key]["receivables_turnover"] = row.get("receivables_turnover") or 0
-#         firms[key]["asset_turnover"] = row.get("asset_turnover") or 0
-#         firms[key]["fixed_asset_turnover"] = row.get("fixed_asset_turnover") or 0
-
-#     return templates.TemplateResponse(
-#         "firm.html",
-#         {"request": request, "companies": json.dumps(list(firms.values()), ensure_ascii=False, default=str)}
-#     )
 
 @app.get("/firm", response_class=HTMLResponse)
 def firm_dashboard(request: Request):
@@ -144,11 +76,7 @@ def firm_dashboard(request: Request):
     )
 
 
-
-
 from fastapi.responses import JSONResponse
-
-
 
 # 기업 기본정보 (연도별)
 @app.get("/api/company-info")
