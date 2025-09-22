@@ -36,7 +36,7 @@ conn = psycopg2.connect(
 data = df.to_dict(orient='records')
 
 # sql query 
-sql = """INSERT INTO public.financialstatements7 (
+sql = """INSERT INTO public.financialstatements6 (
     idx, name, company_code, industry, size, year, established_date, ceo,
     debt_ratio, assets, sales_growth, current_ratio, quick_ratio,
     inventory_turnover, receivables_turnover, asset_turnover, fixed_asset_turnover,
