@@ -39,7 +39,7 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 def firm_dashboard(request: Request):
     cur = conn.cursor()
     sql = """
-        SELECT idx,name,industry,size,grade,year,operating_cf_to_assets,operating_cf_to_debt,operating_cf_to_sales,pd,score,debt_ratio,roe,roa,roic,assets,sales_growth,profit_growth,current_ratio,quick_ratio,inventory_turnover,receivables_turnover,asset_turnover,fixed_asset_turnover,operating_cf,industry_avg_pd,industry_avg_roe,industry_avg_roa,industry_avg_debt_ratio,company_code,established_date,ceo,division,employee_growth_rate,optl,ffoeq,oeneg,cfoint,accounts_payable_turnover,interest_coverage_ratio,noncurrent_asset_turnover
+        SELECT *
         FROM financialstatements6;
     """
     cur.execute(sql)
@@ -507,17 +507,35 @@ def get_companies(year: str):
 
     result = []
     for r in rows:
+        # result.append({
+        #     "idx": r[0],
+        #     "name": r[1],
+        #     "industry": r[2],
+        #     "size": r[3],
+        #     "pd": float(r[4]) if r[4] is not None else 0,
+        #     "grade": r[5],
+        #     "score": float(r[6]) if r[6] is not None else 0,
+        #     "debt_ratio": float(r[7]) if r[7] is not None else 0,
+        #     "roe": float(r[8]) if r[8] is not None else 0,
+        #     "assets": float(r[9]) if r[9] is not None else 0
+        # })
+        def safe_str(v, default=""):
+            return v if v is not None else default
+
+        def safe_float(v, default=0.0):
+            return float(v) if v is not None else default
+
         result.append({
             "idx": r[0],
-            "name": r[1],
-            "industry": r[2],
-            "size": r[3],
-            "pd": float(r[4]) if r[4] is not None else 0,
-            "grade": r[5],
-            "score": float(r[6]) if r[6] is not None else 0,
-            "debt_ratio": float(r[7]) if r[7] is not None else 0,
-            "roe": float(r[8]) if r[8] is not None else 0,
-            "assets": float(r[9]) if r[9] is not None else 0
+            "name": safe_str(r[1]),
+            "industry": safe_str(r[2]),
+            "size": safe_str(r[3]),
+            "pd": safe_float(r[4]),
+            "grade": safe_str(r[5], "-"),
+            "score": safe_float(r[6]),
+            "debt_ratio": safe_float(r[7]),
+            "roe": safe_float(r[8]),
+            "assets": safe_float(r[9]),
         })
     return JSONResponse(result)
 
@@ -623,6 +641,7 @@ async def generate_report(request: Request):
 
     prompt = f"""
     다음 기업의 주요 재무 및 신용 데이터를 분석하여 리포트를 작성해 주세요.
+    대출등급은 A,B일경우 대출이 승인되며, C,D일경우 대출이 거절됩니다. 기업의 대출 거절시 대출 거절 사유와 개선 방향을 제시해주세요.
 
     기업명: {firm.get('name')}
     업종: {firm.get('industry')}
@@ -723,45 +742,68 @@ from difflib import get_close_matches
 @app.post("/chat")
 async def chat_with_ai(request: Request):
     data = await request.json()
-    message = data.get("message", "")
+    message = data.get("message", "").strip()
 
-    # --- 1) 사용자 질문에서 기업명 추출 ---
-    cur = conn.cursor()
-    cur.execute("SELECT DISTINCT name FROM financialstatements6;")
-    firm_names = [r[0] for r in cur.fetchall()]
-    cur.close()
-
+    firm = {}
     target_firm = None
-    if message:
+
+    cur = conn.cursor()
+
+    # 1) 기업코드 직접 입력한 경우 우선 조회
+    cur.execute("""
+        SELECT name, company_code, industry, size, grade, pd, roe, roa, sales_growth, profit_growth
+        FROM financialstatements6
+        WHERE company_code = %s
+        ORDER BY year DESC
+        LIMIT 1
+    """, (message,))
+    row = cur.fetchone()
+
+    if row:
+        target_firm = row[0]
+        firm = {
+            "name": row[0], "company_code": row[1], "industry": row[2], "size": row[3],
+            "grade": row[4], "pd": float(row[5]) if row[5] else None,
+            "roe": float(row[6]) if row[6] else None,
+            "roa": float(row[7]) if row[7] else None,
+            "sales_growth": float(row[8]) if row[8] else None,
+            "profit_growth": float(row[9]) if row[9] else None,
+        }
+    else:
+        # 2) 기업명이 포함된 경우 fuzzy 매칭
+        cur.execute("SELECT DISTINCT name FROM financialstatements6;")
+        firm_names = [r[0] for r in cur.fetchall()]
+        from difflib import get_close_matches
         matches = get_close_matches(message, firm_names, n=1, cutoff=0.6)
         if matches:
             target_firm = matches[0]
+            cur.execute("""
+                SELECT name, company_code, industry, size, grade, pd, roe, roa, sales_growth, profit_growth
+                FROM financialstatements6
+                WHERE name = %s
+                ORDER BY year DESC
+                LIMIT 1
+            """, (target_firm,))
+            row = cur.fetchone()
+            if row:
+                firm = {
+                    "name": row[0], "company_code": row[1], "industry": row[2], "size": row[3],
+                    "grade": row[4], "pd": float(row[5]) if row[5] else None,
+                    "roe": float(row[6]) if row[6] else None,
+                    "roa": float(row[7]) if row[7] else None,
+                    "sales_growth": float(row[8]) if row[8] else None,
+                    "profit_growth": float(row[9]) if row[9] else None,
+                }
+    cur.close()
 
-    firm = {}
-    if target_firm:
-        cur = conn.cursor()
-        cur.execute("SELECT name, industry, size, grade, pd, roe, roa, sales_growth, profit_growth \
-             FROM financialstatements6 WHERE name LIKE %s ORDER BY year DESC LIMIT 1",
-            (f"%{message}%",))
-        row = cur.fetchone()
-        cur.close()
-        if row:
-            firm = {
-                "name": row[0], "industry": row[1], "size": row[2],
-                "grade": row[3], "pd": float(row[4]) if row[4] else None,
-                "roe": float(row[5]) if row[5] else None,
-                "roa": float(row[6]) if row[6] else None,
-                "sales_growth": float(row[7]) if row[7] else None,
-                "profit_growth": float(row[8]) if row[8] else None,
-            }
-
-    # --- 2) 컨텍스트 구성 ---
+    # 3) 컨텍스트 작성
     if firm:
         context = f"""
         기업명: {firm['name']}
+        기업코드: {firm['company_code']}
         업종: {firm['industry']}
         기업규모: {firm['size']}
-        신용등급: {firm['grade']}
+        기업등급: {firm['grade']}
         부실확률(PD): {firm['pd']}
         ROE: {firm['roe']}
         ROA: {firm['roa']}
@@ -771,19 +813,19 @@ async def chat_with_ai(request: Request):
     else:
         context = "해당 질문과 관련된 기업 정보를 DB에서 찾을 수 없습니다."
 
-    # --- 3) 프롬프트 구성 ---
+    # 4) 프롬프트 생성
     prompt = f"""
     당신은 핑뱅크(PingBank)의 대출 상담사입니다.
-    사용자의 질문에 따라 기업 재무 데이터와 신용등급, 부실확률(PD)을 활용하여
-    대출 가능성을 평가하고 고객이 이해하기 쉽게 설명하세요.
-    사용자가 물어보는 회사명이나 기업명이 정확히 일치하지 않아도, 비슷한 이름의 기업에 대한 정보를 제공하면 됩니다.
+    사용자의 질문에 따라 기업 재무 데이터와 신용등급, 부실확률(PD)을 활용하여 대출 가능성을 평가하고 고객이 이해하기 쉽게 설명하세요.
+    사용자가 물어보는 회사명이나 기업명이 정확히 일치하지 않아도, 비슷한 이름의 기업에 대한 정보를 DB에서 찾아서 제공하면 됩니다.
 
     [기업 정보]
     {context}
 
     [지침]
     - 반드시 상담사처럼 정중하고 친절한 말투로 답하세요.
-    - 대출 여부는 **가능 / 조건부 가능 / 불가능** 중 하나로 분명히 제시하세요.
+    - 대출 여부는 **가능 / 조건부 가능 / 불가능** 중 하나로 분명히 제시하세요. 등급이 A, B이면 대출 가능이고 C, D는 대출 불가능입니다.
+    - 기업의 대출 거절시 대출 거절 사유와 개선 방향을 제시해주세요.
     - 근거를 2~3개로 간단히 설명하세요.
     - 기업 데이터를 찾을 수 없으면, 일반적인 대출 심사 기준을 설명하세요.
 

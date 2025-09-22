@@ -1,87 +1,91 @@
 {% include 'header.html' %}
-<body class="bg-gray-100">
-  <div class="flex items-center justify-center h-screen">
-    <div class="bg-white shadow-2xl rounded-2xl w-full max-w-2xl h-[80vh] flex flex-col">
-      <!-- Header -->
-      <div class="bg-blue-600 text-white px-4 py-3 rounded-t-2xl flex justify-between items-center">
-        <h2 class="text-lg font-semibold">AI 금융 상담</h2>
-        <button id="closeChat" class="hover:text-gray-200">&times;</button>
-      </div>
+<body class="bg-gray-100 h-screen">
+  <!-- 전체를 채팅창으로 -->
+  <div class="bg-white shadow-2xl w-full h-full flex flex-col">
 
-      <!-- Chat Window -->
-      <div id="chatWindow" class="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
-        <div class="text-center text-gray-400 text-sm">AI와 대화를 시작해보세요</div>
-      </div>
+    <!-- 로고 -->
+    <div class="p-2 flex justify-center">
+      <img src="/static/images/boosilping4.png" style="width:200px;" alt="핑뱅크 로고">
+    </div>
 
-      <!-- Input Area -->
-      <div class="border-t p-3 flex items-center gap-2">
-        <input 
-          type="text" 
-          id="chatMessage" 
-          class="flex-1 border rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-400"
-          placeholder="메시지를 입력하세요..." 
-        />
-        <button 
-          id="sendChat" 
-          class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow">
-          전송
-        </button>
+    <!-- Header -->
+    <div class="flex items-center justify-between px-4 py-3 text-white" style="background-color: deeppink;">
+      <h2 class="text-lg font-semibold">AI 대출 상담</h2>
+      <button id="closeChat" class="hover:text-gray-200 text-2xl leading-none">&times;</button>
+    </div>
+
+    <!-- Chat Window -->
+    <div id="chatWindow" class="flex-1 overflow-y-auto p-4 space-y-3 bg-gray-50">
+      <div class="text-center text-gray-400 text-sm">
+        AI 상담사에게 기업명 또는 기업코드를 입력해 대출 가능성을 문의해 보세요.
       </div>
+    </div>
+
+    <!-- Input Area -->
+    <div class="border-t p-3 flex items-center gap-2">
+      <input 
+        type="text" 
+        id="chatMessage" 
+        class="flex-1 border rounded-lg px-3 py-1 focus:outline-none focus:ring-2 focus:ring-blue-400"
+        placeholder="기업명 또는 기업코드를 입력하세요..." 
+      />
+      <button 
+        id="sendChat" 
+        class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg shadow" 
+        style="background-color: deeppink;">
+        전송
+      </button>
     </div>
   </div>
 
-  <!-- 수정된 부분만 표시 -->
-<script>
-  const chatWindow = document.getElementById("chatWindow");
-  const input = document.getElementById("chatMessage");
-  const sendBtn = document.getElementById("sendChat");
-  const closeBtn = document.getElementById("closeChat");
+  <!-- JS -->
+  <script>
+    const chatWindow = document.getElementById("chatWindow");
+    const input = document.getElementById("chatMessage");
+    const sendBtn = document.getElementById("sendChat");
+    const closeBtn = document.getElementById("closeChat");
 
-  function appendMessage(sender, text) {
-    const msg = document.createElement("div");
-    msg.className = sender === "user" ? "flex justify-end" : "flex justify-start";
-    msg.innerHTML = `
-      <div class="${sender === "user" ? "bg-blue-600 text-white" : "bg-gray-200 text-gray-800"} 
-                  px-4 py-2 rounded-xl max-w-[75%] shadow whitespace-pre-line">
-        ${text}
-      </div>`;
-    chatWindow.appendChild(msg);
-    chatWindow.scrollTop = chatWindow.scrollHeight;
-  }
-
-  async function sendMessage() {
-    const msg = input.value.trim();
-    if (!msg) return;
-    appendMessage("user", msg);
-    input.value = "";
-
-    const loading = document.createElement("div");
-    loading.className = "flex justify-start";
-    loading.innerHTML = `<div class="bg-gray-200 text-gray-400 px-4 py-2 rounded-xl">...</div>`;
-    chatWindow.appendChild(loading);
-    chatWindow.scrollTop = chatWindow.scrollHeight;
-
-    try {
-      // ✅ 이제 firm 안 보내고 message만 보냄
-      const res = await fetch("/chat", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ message: msg })
-      });
-      const data = await res.json();
-      chatWindow.removeChild(loading);
-      appendMessage("ai", data.reply || "응답이 없습니다.");
-    } catch (err) {
-      chatWindow.removeChild(loading);
-      appendMessage("ai", "⚠️ 서버 오류가 발생했습니다. 다시 시도해주세요.");
+    function appendMessage(sender, text) {
+      const msg = document.createElement("div");
+      msg.className = sender === "user" ? "flex justify-end" : "flex justify-start";
+      msg.innerHTML = `
+        <div class="${sender === "user" ? "bg-pink-600 text-white" : "bg-gray-200 text-gray-800"} 
+                    px-4 py-1 rounded-xl max-w-[75%] shadow whitespace-pre-line leading-tight">
+          ${text}
+        </div>`;
+      chatWindow.appendChild(msg);
+      chatWindow.scrollTop = chatWindow.scrollHeight;
     }
-  }
 
-  sendBtn.onclick = sendMessage;
-  input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendMessage(); } });
-  closeBtn.onclick = () => window.close();
-</script>
+    async function sendMessage() {
+      const msg = input.value.trim();
+      if (!msg) return;
+      appendMessage("user", msg);
+      input.value = "";
 
+      const loading = document.createElement("div");
+      loading.className = "flex justify-start";
+      loading.innerHTML = `<div class="bg-gray-200 text-gray-400 px-4 py-1 rounded-xl">답변 생성 중...</div>`;
+      chatWindow.appendChild(loading);
+      chatWindow.scrollTop = chatWindow.scrollHeight;
+
+      try {
+        const res = await fetch("/chat", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ message: msg })
+        });
+        const data = await res.json();
+        chatWindow.removeChild(loading);
+        appendMessage("ai", data.reply || "응답이 없습니다.");
+      } catch (err) {
+        chatWindow.removeChild(loading);
+        appendMessage("ai", "⚠️ 서버 오류가 발생했습니다. 다시 시도해주세요.");
+      }
+    }
+
+    sendBtn.onclick = sendMessage;
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); sendMessage(); } });
+    closeBtn.onclick = () => window.close();
+  </script>
 </body>
-
-
