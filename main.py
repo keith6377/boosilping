@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from fastapi.staticfiles import StaticFiles
 from decimal import Decimal
@@ -9,6 +9,7 @@ import uvicorn
 import psycopg2
 import json
 import openai
+import math
 
 load_dotenv()
 DB_HOST = os.getenv("DB_HOST")
@@ -32,14 +33,53 @@ app = FastAPI()
 templates = Jinja2Templates(directory="templates")
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# -----------------------------
+# 공통 유틸: 안전 변환 (NaN/Inf/Decimal)
+# -----------------------------
+def _to_none_if_nan_inf(v):
+    if isinstance(v, float) and (math.isnan(v) or math.isinf(v)):
+        return None
+    return v
+
+def _clean_value(v):
+    if v is None:
+        return None
+    if isinstance(v, Decimal):
+        v = float(v)
+    if isinstance(v, float):
+        return _to_none_if_nan_inf(v)
+    return v
+
+def _clean_dict(d: dict):
+    return {k: _clean_value(v) for k, v in d.items()}
+
+def _json_dumps_safe(obj) -> str:
+    # allow_nan=False 로 NaN 직렬화 방지 (즉시 에러로 파악 가능)
+    return json.dumps(obj, ensure_ascii=False, default=str, allow_nan=False)
 
 
 
 @app.get("/firm", response_class=HTMLResponse)
 def firm_dashboard(request: Request):
+    """
+    firm.html에 주입되는 SERVER_COMPANIES 데이터를 구성.
+    차트/보고서에서 쓰는 모든 주요 지표 포함 + NaN 방지.
+    """
     cur = conn.cursor()
     sql = """
-        SELECT *
+        SELECT
+            idx, name, industry, size, grade, year,
+            company_code, established_date, ceo,
+            pd, score, debt_ratio, roe, roa, roic, assets,
+            sales_growth, profit_growth,
+            current_ratio, quick_ratio,
+            inventory_turnover, receivables_turnover, asset_turnover, fixed_asset_turnover,
+            operating_cf,
+            operating_cf_to_assets, operating_cf_to_debt, operating_cf_to_sales,
+            -- 중요 6대 요인
+            optl, ffoeq, accounts_payable_turnover, interest_coverage_ratio,
+            -- 참고 지표
+            noncurrent_asset_turnover
         FROM financialstatements6;
     """
     cur.execute(sql)
@@ -47,43 +87,88 @@ def firm_dashboard(request: Request):
     colnames = [desc[0] for desc in cur.description]
     cur.close()
 
-    def convert(value):
-        if isinstance(value, Decimal):
-            return float(value)
-        return value
+    data = []
+    for row in rows:
+        rec = dict(zip(colnames, row))
+        data.append(_clean_dict(rec))
 
-    data = [dict(zip(colnames, (convert(v) for v in row))) for row in rows]
-
+    # 동일 idx(기업) 기준으로 캐시플로우 타임라인 묶기
     firms = {}
     for row in data:
         key = row["idx"]
         if key not in firms:
-            firms[key] = row.copy()
+            firms[key] = {**row}
             firms[key]["cashflow"] = {"years": [], "operating": [], "investing": [], "financing": []}
-        firms[key]["cashflow"]["years"].append(row["year"])
-        firms[key]["cashflow"]["operating"].append(row.get("operating_cf_to_assets", 0))
-        firms[key]["cashflow"]["investing"].append(row.get("operating_cf_to_debt", 0))
-        firms[key]["cashflow"]["financing"].append(row.get("operating_cf_to_sales", 0))
+        # 타임시리즈 축적
+        firms[key]["cashflow"]["years"].append(row.get("year"))
+        firms[key]["cashflow"]["operating"].append(row.get("operating_cf_to_assets") or 0)
+        firms[key]["cashflow"]["investing"].append(row.get("operating_cf_to_debt") or 0)
+        firms[key]["cashflow"]["financing"].append(row.get("operating_cf_to_sales") or 0)
 
-        firms[key]["inventory_turnover"] = row.get("inventory_turnover") or 0
-        firms[key]["receivables_turnover"] = row.get("receivables_turnover") or 0
-        firms[key]["asset_turnover"] = row.get("asset_turnover") or 0
-        firms[key]["fixed_asset_turnover"] = row.get("fixed_asset_turnover") or 0
+        # 활동성 최신값 보정(빈 데이터일 경우 0)
+        for k in ("inventory_turnover", "receivables_turnover", "asset_turnover", "fixed_asset_turnover"):
+            if k in row and row[k] is not None:
+                firms[key][k] = row[k]
 
-    return templates.TemplateResponse(
-        "firm.html",
-        {"request": request, "companies": json.dumps(list(firms.values()), ensure_ascii=False, default=str)}
-    )
+    # Jinja에 JSON 문자열로 주입 (NaN 금지)
+    companies_json = _json_dumps_safe(list(firms.values()))
+    return templates.TemplateResponse("firm.html", {
+        "request": request,
+        "companies": companies_json
+    })
 
 
-from fastapi.responses import JSONResponse
+@app.get("/main", response_class=HTMLResponse)
+def main_dashboard(request: Request):
+    """
+    main.html에 필요한 리스트(필터/서치 등) 주입.
+    """
+    cur = conn.cursor()
+    sql = """
+        SELECT
+            idx, name, company_code, industry, size, year, established_date, ceo,
+            debt_ratio, assets, sales_growth, current_ratio, quick_ratio,
+            inventory_turnover, receivables_turnover, asset_turnover, fixed_asset_turnover,
+            operating_cf, operating_cf_to_assets, operating_cf_to_debt, operating_cf_to_sales,
+            industry_avg_roe, industry_avg_roa, industry_avg_debt_ratio,
+            roa, roic, division, employee_growth_rate, roe, profit_growth,
+            optl, ffoeq, oeneg, cfoint, accounts_payable_turnover, interest_coverage_ratio,
+            noncurrent_asset_turnover, industry_avg_pd, pd, score, grade
+        FROM financialstatements6;
+    """
+    cur.execute(sql)
+    rows = cur.fetchall()
+    colnames = [desc[0] for desc in cur.description]
+    cur.close()
+
+    data = []
+    for row in rows:
+        data.append(_clean_dict(dict(zip(colnames, row))))
+
+    return templates.TemplateResponse("main.html", {
+        "request": request,
+        "companies": _json_dumps_safe(data)
+    })
+
+@app.get("/sidebar", response_class=HTMLResponse)
+def get_sidebar(request: Request):
+    return templates.TemplateResponse("sidebar.html", {"request": request})
+
 
 # 기업 기본정보 (연도별)
 @app.get("/api/company-info")
 def get_company_info(year: str, company_id: int):
     cur = conn.cursor()
     sql = """
-        SELECT name, company_code, established_date, ceo, size, industry
+        SELECT
+            name, company_code, established_date, ceo, size, industry,
+            grade, pd, score, assets,
+            roe, roa, roic,
+            sales_growth, profit_growth,
+            debt_ratio, current_ratio, quick_ratio,
+            inventory_turnover, receivables_turnover, asset_turnover, fixed_asset_turnover,
+            operating_cf, operating_cf_to_assets, operating_cf_to_debt, operating_cf_to_sales,
+            optl, ffoeq, accounts_payable_turnover, interest_coverage_ratio, noncurrent_asset_turnover
         FROM financialstatements6
         WHERE year = %s AND idx = %s
         LIMIT 1
@@ -95,17 +180,52 @@ def get_company_info(year: str, company_id: int):
     if not row:
         return JSONResponse({})
 
-    name, company_code, established_date, ceo, size, industry = row
+    (
+        name, company_code, established_date, ceo, size, industry,
+        grade, pd, score, assets,
+        roe, roa, roic,
+        sales_growth, profit_growth,
+        debt_ratio, current_ratio, quick_ratio,
+        inventory_turnover, receivables_turnover, asset_turnover, fixed_asset_turnover,
+        operating_cf, operating_cf_to_assets, operating_cf_to_debt, operating_cf_to_sales,
+        optl, ffoeq, accounts_payable_turnover, interest_coverage_ratio, noncurrent_asset_turnover
+    ) = row
 
-    return JSONResponse({
+    payload = {
         "name": name,
-        "code": company_code,
+        "company_code": company_code,                       # 서버 리스트(SERVER_COMPANIES)와 정합성 유지
+        "code": company_code,                               # 혹시 프론트에서 code로도 참조하면 대비
         "established_date": str(established_date) if established_date else None,
         "ceo": ceo,
         "size": size,
-        "industry": industry
-    })
-
+        "industry": industry,
+        "grade": grade,
+        "pd": _clean_value(pd),
+        "score": _clean_value(score),
+        "assets": _clean_value(assets),
+        "roe": _clean_value(roe),
+        "roa": _clean_value(roa),
+        "roic": _clean_value(roic),
+        "sales_growth": _clean_value(sales_growth),
+        "profit_growth": _clean_value(profit_growth),
+        "debt_ratio": _clean_value(debt_ratio),
+        "current_ratio": _clean_value(current_ratio),
+        "quick_ratio": _clean_value(quick_ratio),
+        "inventory_turnover": _clean_value(inventory_turnover),
+        "receivables_turnover": _clean_value(receivables_turnover),
+        "asset_turnover": _clean_value(asset_turnover),
+        "fixed_asset_turnover": _clean_value(fixed_asset_turnover),
+        "operating_cf": _clean_value(operating_cf),
+        "operating_cf_to_assets": _clean_value(operating_cf_to_assets),
+        "operating_cf_to_debt": _clean_value(operating_cf_to_debt),
+        "operating_cf_to_sales": _clean_value(operating_cf_to_sales),
+        "optl": _clean_value(optl),
+        "ffoeq": _clean_value(ffoeq),
+        "accounts_payable_turnover": _clean_value(accounts_payable_turnover),
+        "interest_coverage_ratio": _clean_value(interest_coverage_ratio),
+        "noncurrent_asset_turnover": _clean_value(noncurrent_asset_turnover),
+    }
+    return JSONResponse(payload)
 
 
 # 신용점수 (기업)
@@ -117,19 +237,18 @@ def get_credit_score(year: str, company_id: int):
     row = cur.fetchone()
     cur.close()
 
-    if row:
-        grade, score = row
-        if isinstance(score, Decimal):
-            score = float(score)
-        delta = "등급 안정" if grade == "A" else "변동 있음"
-        return JSONResponse({"grade": grade, "delta": delta, "score": score})
-    else:
+    if not row:
         return JSONResponse({"grade": "-", "delta": "-", "score": 0})
 
+    grade, score = row
+    score = _clean_value(score) or 0
+    delta = "등급 안정" if grade == "A" else "변동 있음"
+    return JSONResponse({"grade": grade, "delta": delta, "score": score})
 
-# 신용점수 (업종평균)
-@app.get("/api/credit-score-avg")
-def get_credit_score_avg(year: str, company_id: int):
+
+# 점수 비교 (기업/업종/규모/전체)
+@app.get("/api/score-avg")
+def get_score_avg(year: str, company_id: int):
     cur = conn.cursor()
     sql = """
         -- 기업
@@ -138,41 +257,30 @@ def get_credit_score_avg(year: str, company_id: int):
         WHERE "year" = %s AND idx = %s
 
         UNION ALL
-
         -- 업종 평균
         SELECT '업종 평균', ROUND(AVG(score),2)
         FROM financialstatements6
         WHERE "year" = %s
-          AND industry = (
-            SELECT industry FROM financialstatements6 
-            WHERE idx = %s
-            LIMIT 1
-          )
+          AND industry = (SELECT industry FROM financialstatements6 WHERE idx = %s LIMIT 1)
 
         UNION ALL
-
         -- 규모 평균
         SELECT '규모 평균', ROUND(AVG(score),2)
         FROM financialstatements6
         WHERE "year" = %s
-          AND size = (
-            SELECT size FROM financialstatements6 
-            WHERE idx = %s
-            LIMIT 1
-          )
+          AND size = (SELECT size FROM financialstatements6 WHERE idx = %s LIMIT 1)
 
         UNION ALL
-
         -- 전체 평균
         SELECT '전체 평균', ROUND(AVG(score),2)
         FROM financialstatements6
         WHERE "year" = %s
     """
     cur.execute(sql, (
-        int(year), company_id,   # 기업
-        int(year), company_id,   # 업종 평균
-        int(year), company_id,   # 규모 평균
-        int(year)                # 전체 평균
+        int(year), company_id,
+        int(year), company_id,
+        int(year), company_id,
+        int(year)
     ))
     rows = cur.fetchall()
     cur.close()
@@ -180,6 +288,9 @@ def get_credit_score_avg(year: str, company_id: int):
     result = [{"label": r[0], "value": float(r[1]) if r[1] is not None else 0} for r in rows]
     return JSONResponse(result)
 
+@app.get("/api/credit-score-avg")
+def get_credit_score_avg(year: str, company_id: int):
+    return get_score_avg(year, company_id)
 
 
 # 부실확률 (기업별, 연도별)
@@ -187,7 +298,7 @@ def get_credit_score_avg(year: str, company_id: int):
 def get_pd(year: str, company_id: int):
     cur = conn.cursor()
 
-    # 기업 PD
+    # 기업 PD + 업종
     cur.execute("""
         SELECT pd, industry
         FROM financialstatements6
@@ -211,8 +322,8 @@ def get_pd(year: str, company_id: int):
     cur.close()
 
     return JSONResponse({
-        "pd": float(pd) if pd is not None else 0.0,
-        "industry_avg": float(ind_pd)
+        "pd": float(pd) if pd is not None and not math.isnan(pd) and not math.isinf(pd) else 0.0,
+        "industry_avg": float(ind_pd) if ind_pd is not None else 0.0
     })
 
 
@@ -495,7 +606,7 @@ def get_activity(year: str, company_id: int):
 def get_companies(year: str):
     cur = conn.cursor()
     sql = """
-        SELECT idx, name, industry, size, pd, grade, score, debt_ratio, roe, assets
+        SELECT *
         FROM financialstatements6
         WHERE year = %s
         ORDER BY idx
@@ -503,41 +614,25 @@ def get_companies(year: str):
     """
     cur.execute(sql, (int(year),))
     rows = cur.fetchall()
+    colnames = [desc[0] for desc in cur.description]
     cur.close()
 
+    def clean_value(v):
+        """NaN, Decimal, None → 안전하게 변환"""
+        if v is None:
+            return 0
+        try:
+            return float(v)
+        except Exception:
+            return str(v)
+
     result = []
-    for r in rows:
-        # result.append({
-        #     "idx": r[0],
-        #     "name": r[1],
-        #     "industry": r[2],
-        #     "size": r[3],
-        #     "pd": float(r[4]) if r[4] is not None else 0,
-        #     "grade": r[5],
-        #     "score": float(r[6]) if r[6] is not None else 0,
-        #     "debt_ratio": float(r[7]) if r[7] is not None else 0,
-        #     "roe": float(r[8]) if r[8] is not None else 0,
-        #     "assets": float(r[9]) if r[9] is not None else 0
-        # })
-        def safe_str(v, default=""):
-            return v if v is not None else default
+    for row in rows:
+        rec = {col: clean_value(val) for col, val in zip(colnames, row)}
+        result.append(rec)
 
-        def safe_float(v, default=0.0):
-            return float(v) if v is not None else default
-
-        result.append({
-            "idx": r[0],
-            "name": safe_str(r[1]),
-            "industry": safe_str(r[2]),
-            "size": safe_str(r[3]),
-            "pd": safe_float(r[4]),
-            "grade": safe_str(r[5], "-"),
-            "score": safe_float(r[6]),
-            "debt_ratio": safe_float(r[7]),
-            "roe": safe_float(r[8]),
-            "assets": safe_float(r[9]),
-        })
     return JSONResponse(result)
+
 
 
 
@@ -589,44 +684,6 @@ def firm_dashboard(request: Request):
     )
 
 
-@app.get("/main", response_class=HTMLResponse)
-def firm_dashboard(request: Request):
-    cur = conn.cursor()
-    sql = """SELECT idx,name,company_code,industry,size,year,established_date,ceo,debt_ratio,assets,sales_growth,current_ratio,quick_ratio,inventory_turnover,receivables_turnover,asset_turnover,fixed_asset_turnover,operating_cf,operating_cf_to_assets,operating_cf_to_debt,industry_avg_roe,industry_avg_roa,industry_avg_debt_ratio,roa,roic,division,employee_growth_rate,roe,operating_cf_to_sales,profit_growth,optl,ffoeq,oeneg,cfoint,accounts_payable_turnover,interest_coverage_ratio,noncurrent_asset_turnover,industry_avg_pd,pd,score,grade
-             FROM financialstatements6;"""
-    cur.execute(sql)
-    rows = cur.fetchall()
-    colnames = [desc[0] for desc in cur.description]
-    cur.close()
-
-    # Decimal → float 변환
-    def convert(value):
-        if isinstance(value, Decimal):
-            return float(value)
-        return value
-
-    data = [dict(zip(colnames, (convert(v) for v in row))) for row in rows]
-
-    return templates.TemplateResponse(
-        "main.html",
-        {"request": request, "companies": json.dumps(data, ensure_ascii=False, default=str)}
-    )
-
-
-# @app.get("/main", response_class=HTMLResponse)
-# def get_sidebar(request: Request):
-#     return templates.TemplateResponse("main.html", {"request": request})
-
-
-@app.get("/sidebar", response_class=HTMLResponse)
-def get_sidebar(request: Request):
-    return templates.TemplateResponse("sidebar.html", {"request": request})
-
-
-
-
-
-
 
 
 import os
@@ -636,30 +693,68 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 @app.post("/generate-report")
 async def generate_report(request: Request):
+    """
+    프론트에서 보내는 firm 객체(= SERVER_COMPANIES에서 선택 or /api/company-info 결과)를 그대로 사용.
+    JS 키와 동일한 이름을 유지해 프롬프트에 반영.
+    """
     data = await request.json()
     firm = data.get("firm") or {}
 
     prompt = f"""
-    다음 기업의 주요 재무 및 신용 데이터를 분석하여 리포트를 작성해 주세요.
-    대출등급은 A,B일경우 대출이 승인되며, C,D일경우 대출이 거절됩니다. 기업의 대출 거절시 대출 거절 사유와 개선 방향을 제시해주세요.
+    다음 기업의 주요 재무 및 신용 데이터를 분석하여 종합 리포트를 작성해 주세요.
+    대출등급은 A,B일 경우 대출 승인, C,D일 경우 대출 거절입니다.
+    대출 거절 시 반드시 사유와 개선 방향을 제시해 주세요.
 
+    [기업 기본 정보]
     기업명: {firm.get('name')}
+    기업코드: {firm.get('company_code') or firm.get('code')}
     업종: {firm.get('industry')}
     기업규모: {firm.get('size')}
+    설립일: {firm.get('established_date')}
+    대표자: {firm.get('ceo')}
     대출등급: {firm.get('grade')}
     부실확률(PD): {firm.get('pd')}
+    신용점수: {firm.get('score')}
+    총자산: {firm.get('assets')}
+
+    [재무 지표]
     ROE: {firm.get('roe')}
     ROA: {firm.get('roa')}
+    ROIC: {firm.get('roic')}
     매출 성장률: {firm.get('sales_growth')}
     영업이익 성장률: {firm.get('profit_growth')}
+    부채비율: {firm.get('debt_ratio')}
+    유동비율: {firm.get('current_ratio')}
+    당좌비율: {firm.get('quick_ratio')}
+    재고회전율: {firm.get('inventory_turnover')}
+    매출채권회전율: {firm.get('receivables_turnover')}
+    총자산회전율: {firm.get('asset_turnover')}
+    고정자산회전율: {firm.get('fixed_asset_turnover')}
+    영업현금흐름: {firm.get('operating_cf')}
+    영업현금흐름/총자산: {firm.get('operating_cf_to_assets')}
+    영업현금흐름/부채: {firm.get('operating_cf_to_debt')}
+    영업현금흐름/매출: {firm.get('operating_cf_to_sales')}
+
+    [특히 중요하게 평가할 요인]
+    - ROE: {firm.get('roe')}
+    - 영업이익/총부채(OPTL): {firm.get('optl')}
+    - 운영현금흐름/자기자본(FFOEQ): {firm.get('ffoeq')}
+    - 영업손익증가율(= 영업이익 성장/변화): {firm.get('profit_growth')}
+    - 매입채무회전율: {firm.get('accounts_payable_turnover')}
+    - 재무보상비율(ICR): {firm.get('interest_coverage_ratio')}
+
+    --- 작성 지침 ---
+    1) 재무 건전성·수익성·성장성·활동성·현금흐름을 종합 평가.
+    2) 위 6개 요인은 부실 가능성 영향이 크므로 반드시 강조 분석.
+    3) 대출 여부를 **가능 / 조건부 가능 / 불가능**으로 명확히 제시.
+    4) 핵심 근거 2~3개 제시, 필요 시 개선 방향 제안.
     """
 
     response = client.chat.completions.create(
-        model="gpt-4o-mini",  # gpt-4o-mini 또는 gpt-3.5-turbo 권장
+        model="gpt-4o-mini",
         messages=[{"role": "user", "content": prompt}]
     )
     return {"report": response.choices[0].message.content}
-
 
 
 
@@ -737,98 +832,213 @@ def get_drivers(year: int, company_id: int):
 
 
 
+# from difflib import get_close_matches
+
+# @app.post("/chat")
+# async def chat_with_ai(request: Request):
+#     data = await request.json()
+#     message = (data.get("message") or "").strip()
+
+#     # 기본적으로 프론트에서 firm을 주면 사용
+#     firm = data.get("firm") or {}
+
+#     # firm이 없을 때: 메시지가 기업코드일 가능성 우선 조회
+#     if not firm and message:
+#         cur = conn.cursor()
+#         cur.execute("""
+#             SELECT name, company_code, industry, size, grade, pd, roe, roa, sales_growth, profit_growth
+#             FROM financialstatements6
+#             WHERE company_code = %s
+#             ORDER BY year DESC
+#             LIMIT 1
+#         """, (message,))
+#         row = cur.fetchone()
+
+#         if row:
+#             firm = {
+#                 "name": row[0], "company_code": row[1], "industry": row[2], "size": row[3],
+#                 "grade": row[4], "pd": _clean_value(row[5]),
+#                 "roe": _clean_value(row[6]), "roa": _clean_value(row[7]),
+#                 "sales_growth": _clean_value(row[8]), "profit_growth": _clean_value(row[9]),
+#             }
+#         else:
+#             # 기업명이면 fuzzy 매칭
+#             cur.execute("SELECT DISTINCT name FROM financialstatements6;")
+#             firm_names = [r[0] for r in cur.fetchall()]
+#             from difflib import get_close_matches
+#             matches = get_close_matches(message, firm_names, n=1, cutoff=0.6)
+#             if matches:
+#                 target = matches[0]
+#                 cur.execute("""
+#                     SELECT name, company_code, industry, size, grade, pd, roe, roa, sales_growth, profit_growth
+#                     FROM financialstatements6
+#                     WHERE name = %s
+#                     ORDER BY year DESC
+#                     LIMIT 1
+#                 """, (target,))
+#                 row = cur.fetchone()
+#                 if row:
+#                     firm = {
+#                         "name": row[0], "company_code": row[1], "industry": row[2], "size": row[3],
+#                         "grade": row[4], "pd": _clean_value(row[5]),
+#                         "roe": _clean_value(row[6]), "roa": _clean_value(row[7]),
+#                         "sales_growth": _clean_value(row[8]), "profit_growth": _clean_value(row[9]),
+#                     }
+#         cur.close()
+
+#     context = f"""
+#     기업명: {firm.get('name')}
+#     업종: {firm.get('industry')}
+#     기업규모: {firm.get('size')}
+#     대출등급: {firm.get('grade')}
+#     부실확률(PD): {firm.get('pd')}
+#     ROE: {firm.get('roe')}
+#     ROA: {firm.get('roa')}
+#     매출 성장률: {firm.get('sales_growth')}
+#     영업이익 성장률: {firm.get('profit_growth')}
+#     """
+
+#     prompt = f"""
+#     당신은 핑뱅크(PingBank)의 대출 상담사입니다.
+#     기업의 재무정보(등급/PD/수익성/성장성)를 근거로 대출 가능성을 상담해 주세요.
+
+#     [기업 정보]
+#     {context}
+
+#     [지침]
+#     - 정중하고 친절한 말투.
+#     - 대출 여부는 **가능 / 조건부 가능 / 불가능** 중 하나로 분명히 제시.
+#     - 2~3개의 핵심 근거를 간단 명료하게 제시.
+#     - 기업 데이터를 찾지 못하면 일반적인 심사 기준을 설명.
+#     [사용자 질문]
+#     {message}
+#     """
+
+#     response = client.chat.completions.create(
+#         model="gpt-4o-mini",
+#         messages=[{"role": "user", "content": prompt}]
+#     )
+#     return {"reply": response.choices[0].message.content}
+
+
+
+
+
+
 from difflib import get_close_matches
 
 @app.post("/chat")
 async def chat_with_ai(request: Request):
     data = await request.json()
-    message = data.get("message", "").strip()
+    message = (data.get("message") or "").strip()
 
-    firm = {}
-    target_firm = None
+    # 프론트에서 firm 객체를 주는 경우 우선 사용
+    firm = data.get("firm") or {}
 
-    cur = conn.cursor()
+    # firm이 없으면 DB에서 조회 (기업코드 → 기업명 fuzzy 매칭 순서)
+    if not firm and message:
+        cur = conn.cursor()
 
-    # 1) 기업코드 직접 입력한 경우 우선 조회
-    cur.execute("""
-        SELECT name, company_code, industry, size, grade, pd, roe, roa, sales_growth, profit_growth
-        FROM financialstatements6
-        WHERE company_code = %s
-        ORDER BY year DESC
-        LIMIT 1
-    """, (message,))
-    row = cur.fetchone()
+        # 1) 기업코드로 조회
+        cur.execute("""
+            SELECT name, company_code, industry, size, grade, pd, score, assets,
+                   roe, roa, roic,
+                   sales_growth, profit_growth,
+                   debt_ratio, current_ratio, quick_ratio,
+                   inventory_turnover, receivables_turnover, asset_turnover, fixed_asset_turnover,
+                   operating_cf, operating_cf_to_assets, operating_cf_to_debt, operating_cf_to_sales,
+                   optl, ffoeq,
+                   accounts_payable_turnover, interest_coverage_ratio
+            FROM financialstatements6
+            WHERE company_code = %s
+            ORDER BY year DESC
+            LIMIT 1
+        """, (message,))
+        row = cur.fetchone()
 
-    if row:
-        target_firm = row[0]
-        firm = {
-            "name": row[0], "company_code": row[1], "industry": row[2], "size": row[3],
-            "grade": row[4], "pd": float(row[5]) if row[5] else None,
-            "roe": float(row[6]) if row[6] else None,
-            "roa": float(row[7]) if row[7] else None,
-            "sales_growth": float(row[8]) if row[8] else None,
-            "profit_growth": float(row[9]) if row[9] else None,
-        }
-    else:
-        # 2) 기업명이 포함된 경우 fuzzy 매칭
-        cur.execute("SELECT DISTINCT name FROM financialstatements6;")
-        firm_names = [r[0] for r in cur.fetchall()]
-        from difflib import get_close_matches
-        matches = get_close_matches(message, firm_names, n=1, cutoff=0.6)
-        if matches:
-            target_firm = matches[0]
-            cur.execute("""
-                SELECT name, company_code, industry, size, grade, pd, roe, roa, sales_growth, profit_growth
-                FROM financialstatements6
-                WHERE name = %s
-                ORDER BY year DESC
-                LIMIT 1
-            """, (target_firm,))
-            row = cur.fetchone()
-            if row:
-                firm = {
-                    "name": row[0], "company_code": row[1], "industry": row[2], "size": row[3],
-                    "grade": row[4], "pd": float(row[5]) if row[5] else None,
-                    "roe": float(row[6]) if row[6] else None,
-                    "roa": float(row[7]) if row[7] else None,
-                    "sales_growth": float(row[8]) if row[8] else None,
-                    "profit_growth": float(row[9]) if row[9] else None,
-                }
-    cur.close()
+        if not row:
+            # 2) fuzzy 매칭으로 기업명 찾기
+            cur.execute("SELECT DISTINCT name FROM financialstatements6;")
+            firm_names = [r[0] for r in cur.fetchall()]
+            matches = get_close_matches(message, firm_names, n=1, cutoff=0.6)
+            if matches:
+                target = matches[0]
+                cur.execute("""
+                    SELECT name, company_code, industry, size, grade, pd, score, assets,
+                           roe, roa, roic,
+                           sales_growth, profit_growth,
+                           debt_ratio, current_ratio, quick_ratio,
+                           inventory_turnover, receivables_turnover, asset_turnover, fixed_asset_turnover,
+                           operating_cf, operating_cf_to_assets, operating_cf_to_debt, operating_cf_to_sales,
+                           optl, ffoeq,
+                           accounts_payable_turnover, interest_coverage_ratio
+                    FROM financialstatements6
+                    WHERE name = %s
+                    ORDER BY year DESC
+                    LIMIT 1
+                """, (target,))
+                row = cur.fetchone()
 
-    # 3) 컨텍스트 작성
-    if firm:
-        context = f"""
-        기업명: {firm['name']}
-        기업코드: {firm['company_code']}
-        업종: {firm['industry']}
-        기업규모: {firm['size']}
-        기업등급: {firm['grade']}
-        부실확률(PD): {firm['pd']}
-        ROE: {firm['roe']}
-        ROA: {firm['roa']}
-        매출 성장률: {firm['sales_growth']}
-        영업이익 성장률: {firm['profit_growth']}
-        """
-    else:
-        context = "해당 질문과 관련된 기업 정보를 DB에서 찾을 수 없습니다."
+        if row:
+            firm = {
+                "name": row[0], "company_code": row[1], "industry": row[2], "size": row[3],
+                "grade": row[4], "pd": _clean_value(row[5]), "score": _clean_value(row[6]), "assets": _clean_value(row[7]),
+                "roe": _clean_value(row[8]), "roa": _clean_value(row[9]), "roic": _clean_value(row[10]),
+                "sales_growth": _clean_value(row[11]), "profit_growth": _clean_value(row[12]),
+                "debt_ratio": _clean_value(row[13]), "current_ratio": _clean_value(row[14]), "quick_ratio": _clean_value(row[15]),
+                "inventory_turnover": _clean_value(row[16]), "receivables_turnover": _clean_value(row[17]),
+                "asset_turnover": _clean_value(row[18]), "fixed_asset_turnover": _clean_value(row[19]),
+                "operating_cf": _clean_value(row[20]), "operating_cf_to_assets": _clean_value(row[21]),
+                "operating_cf_to_debt": _clean_value(row[22]), "operating_cf_to_sales": _clean_value(row[23]),
+                "optl": _clean_value(row[24]), "ffoeq": _clean_value(row[25]),
+                "accounts_payable_turnover": _clean_value(row[26]), "interest_coverage_ratio": _clean_value(row[27]),
+            }
+        cur.close()
 
-    # 4) 프롬프트 생성
+    # --- 프롬프트 컨텍스트 ---
+    context = f"""
+    기업명: {firm.get('name')}
+    업종: {firm.get('industry')}
+    기업규모: {firm.get('size')}
+    대출등급: {firm.get('grade')}
+    부실확률(PD): {firm.get('pd')}
+    신용점수: {firm.get('score')}
+    총자산: {firm.get('assets')}
+    ROE: {firm.get('roe')}
+    ROA: {firm.get('roa')}
+    ROIC: {firm.get('roic')}
+    매출 성장률: {firm.get('sales_growth')}
+    영업이익 성장률: {firm.get('profit_growth')}
+    부채비율: {firm.get('debt_ratio')}
+    유동비율: {firm.get('current_ratio')}
+    당좌비율: {firm.get('quick_ratio')}
+    재고회전율: {firm.get('inventory_turnover')}
+    매출채권회전율: {firm.get('receivables_turnover')}
+    총자산회전율: {firm.get('asset_turnover')}
+    고정자산회전율: {firm.get('fixed_asset_turnover')}
+    영업현금흐름: {firm.get('operating_cf')}
+    영업현금흐름/총자산: {firm.get('operating_cf_to_assets')}
+    영업현금흐름/부채: {firm.get('operating_cf_to_debt')}
+    영업현금흐름/매출: {firm.get('operating_cf_to_sales')}
+    영업이익/총부채(OPTL): {firm.get('optl')}
+    운영현금흐름/자기자본(FFOEQ): {firm.get('ffoeq')}
+    매입채무회전율: {firm.get('accounts_payable_turnover')}
+    재무보상비율(ICR): {firm.get('interest_coverage_ratio')}
+    """
+
+    # --- GPT 프롬프트 ---
     prompt = f"""
     당신은 핑뱅크(PingBank)의 대출 상담사입니다.
-    사용자의 질문에 따라 기업 재무 데이터와 신용등급, 부실확률(PD)을 활용하여 대출 가능성을 평가하고 고객이 이해하기 쉽게 설명하세요.
-    사용자가 물어보는 회사명이나 기업명이 정확히 일치하지 않아도, 비슷한 이름의 기업에 대한 정보를 DB에서 찾아서 제공하면 됩니다.
+    기업의 재무정보를 종합하여 대출 가능성을 상담해 주세요.
 
     [기업 정보]
     {context}
 
     [지침]
-    - 반드시 상담사처럼 정중하고 친절한 말투로 답하세요.
-    - 대출 여부는 **가능 / 조건부 가능 / 불가능** 중 하나로 분명히 제시하세요. 등급이 A, B이면 대출 가능이고 C, D는 대출 불가능입니다.
-    - 기업의 대출 거절시 대출 거절 사유와 개선 방향을 제시해주세요.
-    - 근거를 2~3개로 간단히 설명하세요.
-    - 기업 데이터를 찾을 수 없으면, 일반적인 대출 심사 기준을 설명하세요.
-
+    - 정중하고 친절한 말투.
+    - 대출 여부는 **가능 / 조건부 가능 / 불가능** 중 하나로 명확히 제시.
+    - 2~3개의 핵심 근거를 간단히 설명.
+    - 기업 데이터를 찾지 못하면 일반적인 심사 기준을 설명.
     [사용자 질문]
     {message}
     """
@@ -838,6 +1048,7 @@ async def chat_with_ai(request: Request):
         messages=[{"role": "user", "content": prompt}]
     )
     return {"reply": response.choices[0].message.content}
+
 
 
 @app.get("/chat", response_class=HTMLResponse)

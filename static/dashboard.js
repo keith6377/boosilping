@@ -195,44 +195,44 @@
 
   function hbar(el, labels, values, colors, unit) {
   const c = document.getElementById(el);
+  if (!c) return;
   const { w, h, ctx } = sizeCanvas(c, 220);
 
-  const padL = 140, padR = 60;   // 라벨 영역 확보
-  const barH = (h - 20) / labels.length - 6;
+  const padL = 140, padR = 60;
+  const barH = Math.max(1, (h - 20) / labels.length - 6);
 
-  // ✅ 단순 최대값 기준 스케일
-  const max = Math.max(...values);
+  // 숫자 배열 정규화 + 최대값 최소 1 보장
+  const v = values.map(x => Number(x) || 0);
+  const max = Math.max(...v, 1);           // ← ✅ 0일 때도 최소 1
 
+  ctx.clearRect(0, 0, w, h);
   ctx.font = '12px system-ui';
   const displayUnit = unit || '%';
 
   labels.forEach((lb, i) => {
-    const val = values[i];
-    const ratio = val / max;   // ✅ 값 / 최대값
+    const val = v[i];
+    const ratio = val / max;               // ← 0 ≤ ratio ≤ 1
     const width = (w - padL - padR) * ratio;
 
     const y0 = 10 + i * (barH + 10);
     const x0 = padL;
 
-    // 라벨 (항목 이름)
+    // 라벨
     ctx.fillStyle = 'var(--muted)';
     ctx.textAlign = 'left';
     ctx.fillText(lb, 10, y0 + barH - 2);
 
-    // 막대
-    ctx.fillStyle = colors ? colors[i] : '#2563eb';
+    // 막대 (색상 인덱스 안전 처리)
+    ctx.fillStyle = (colors && colors[i]) ? colors[i] : '#2563eb';
     ctx.fillRect(x0, y0, width, barH);
 
     // 값 라벨
     ctx.fillStyle = 'var(--text)';
     ctx.textAlign = 'left';
-    ctx.fillText(
-      val.toFixed(1) + ' ' + displayUnit,
-      x0 + width + 6,
-      y0 + barH - 2
-    );
+    ctx.fillText(`${val.toFixed(1)} ${displayUnit}`, x0 + width + 6, y0 + barH - 2);
   });
 }
+
 
 
 
