@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>리포트 확인</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    #reportContent, .title-bar, .footer {
+      page-break-inside: avoid;
+    }
+
+    /* 최상단 PDF 다운로드 링크 */
+    .top-bar {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 15px;
+    }
+    .download-link {
+      font-size: 14px;
+      text-decoration: none;
+      color: blue;
+    }
+
+    /* 제목 + 로고 */
+    .title-bar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+
+  </style>
+  <!-- html2pdf.js CDN 추가 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.9.3/html2pdf.bundle.min.js"></script>
+</head>
+
+<body>
+  <div class="app" id="reportArea">
+
+    <!-- 🔹 PDF 다운로드 링크 (맨 위 오른쪽) -->
+    <div class="top-bar">
+      <a href="#" id="downloadPdf" class="download-link">📄 PDF 다운로드</a>
+    </div>
+
+    <!-- 🔹 제목 왼쪽, 로고 오른쪽 -->
+    <div class="title-bar">
+      <h1 style="margin:0;">기업신용 리스크 보고서</h1>
+      <img src="/static/images/boosilping4.png" alt="로고" style="height:40px;">
+    </div>
+
+    
+    <!-- 리포트 본문 -->
+    <div id="reportContent">로딩 중...</div>
+
+
+    <!-- 🔹 푸터 -->
+    <div class="footer" style="text-align:center; margin-top:50px; margin-bottom:50px;">
+      © <span id="year"></span> Catch Boosil Ping
+    </div>
+
+    <script>
+      // 로컬 스토리지에서 리포트 불러오기
+      const report = localStorage.getItem("latestReport");
+      document.getElementById("reportContent").innerText =
+        report || "⚠️ 저장된 리포트가 없습니다.";
+
+      // PDF 다운로드 이벤트 (html2pdf.js 사용)
+      document.getElementById("downloadPdf").addEventListener("click", (e) => {
+        e.preventDefault();
+        const element = document.getElementById("reportArea");
+
+        const opt = {
+        margin: 0.5,
+        filename: 'report.pdf',
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2 },
+        jsPDF: { unit: 'in', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }  // ✅ 추가
+      };
+
+      html2pdf().set(opt).from(element).save();
+
+      });
+      
+    </script>
+  </div>
+</body>
+</html>

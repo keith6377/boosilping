@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>캐치 부실핑!</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+
+  <style>
+    body {
+      margin: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: center; /* 세로 중앙 */
+      align-items: center;     /* 가로 중앙 */
+      background: #fff;
+      font-family: Arial, sans-serif;
+    }
+
+    .logo {
+      margin-bottom: 40px;
+    }
+
+    /* topbar를 구글 검색창처럼 꾸밈 */
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid #ccc;
+      border-radius: 24px;
+      padding: 8px 16px;
+      width: 500px;
+      max-width: 90%;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+      background: #fff;
+    }
+
+    .topbar .search {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      flex: 1;
+    }
+
+    .topbar input {
+      flex: 1;
+      border: none;
+      outline: none;
+      font-size: 16px;
+    }
+
+    .btn {
+      background: #f8f9fa;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+
+    .btn:hover {
+      background: #e8e9ea;
+    }
+  </style>
+
+  <script src="/static/dashboard.js" defer></script>
+  <link rel="icon" type="image/png" href="/static/images/favicon.png">
+</head>
+
+<body>
+  <!-- <div><p style="text-align: center; font-size: 30px; font-weight: bold; margin:0;">캐치 부실 핑!</p></div> -->
+  <!-- 로고 -->
+  <div class="logo" style="margin:0;">
+    <img src="/static/images/boosilping3.png" alt="사이트 로고" width="350"/>
+  </div>
+  
+
+  <!-- 기존 topbar 그대로 유지 -->
+  <div class="topbar" style="margin:20px;">
+    <div class="search" style="border:none;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" 
+           stroke="currentColor" stroke-width="2">
+        <circle cx="11" cy="11" r="8"/>
+        <path d="M21 21l-4.3-4.3"/>
+      </svg>
+      <input id="q" placeholder="기업명 또는 기업코드 검색"/>
+      <button class="btn" id="searchBtn" style="border:solid 1px;">캐치!</button>
+    </div>
+  </div>
+
+  <a href="/firm"><button class="btn" style="margin:20px; border:solid 1px;">대시보드 바로가기</button></a>
+</body>
+
+<footer>
+  <div class="footer">© <span id="year"></span> Catch Boosil Ping</div>
+</footer>
+
+</html>

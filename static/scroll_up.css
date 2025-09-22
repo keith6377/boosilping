@@ -1,0 +1,23 @@
+.to-top{
+    position: fixed;
+    right: 16px; bottom: 16px;
+    width: 44px; height: 44px;
+    border: none; border-radius: 9999px;
+    background:#ff4fa0; /* Ping Bank 핑크 톤 */
+    color:#fff; display:flex; align-items:center; justify-content:center;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.18);
+    cursor: pointer; opacity:0; pointer-events:none; transform: translateY(8px);
+    transition: opacity .2s ease, transform .2s ease, background .2s ease;
+    z-index: 9999;
+  }
+  .to-top svg path{ fill:#fff; }
+  .to-top:hover{ background:#ff2e90; }
+  .to-top:focus-visible{ outline:3px solid rgba(255,79,160,.35); outline-offset:3px; }
+
+  /* 나타났을 때 */
+  .to-top.show{ opacity:1; pointer-events:auto; transform: translateY(0); }
+
+  /* 작은 화면에서 살짝 올리기 */
+  @media (max-width: 480px){
+    .to-top{ right:12px; bottom:12px; }
+  }
