@@ -379,9 +379,10 @@ def get_pd_avg(year: str, company_id: int):
 def get_peers(year: str, company_id: int):
     cur = conn.cursor()
 
-    # 기준 기업의 업종 가져오기 (해당 연도)
+    # 기준 기업의 업종 정보 가져오기
     cur.execute("""
-        SELECT industry FROM financialstatements6
+        SELECT industry, size 
+        FROM financialstatements6
         WHERE year = %s AND idx = %s
         LIMIT 1
     """, (int(year), company_id))
@@ -389,27 +390,66 @@ def get_peers(year: str, company_id: int):
     if not row:
         cur.close()
         return JSONResponse({"peers": []})
-    industry = row[0]
 
-    # 해당 연도의 같은 업종 기업들 조회 (ROE, 부채비율만)
-    sql = """
-        SELECT idx, name, roe, debt_ratio
-        FROM financialstatements6
-        WHERE year = %s AND industry = %s
-    """
-    cur.execute(sql, (int(year), industry))
-    rows = cur.fetchall()
-    cur.close()
+    industry, size = row[0], row[1]
 
     peers = []
-    for r in rows:
-        peers.append({
-            "idx": r[0],
-            "name": r[1],
-            "roe": float(r[2]) if r[2] is not None else 0,
-            "debt_ratio": float(r[3]) if r[3] is not None else 0
-        })
+    if industry:  # ✅ 업종 값이 있으면 업종 전체 불러오기
+        sql = """
+            SELECT idx, name, roe, debt_ratio
+            FROM financialstatements6
+            WHERE year = %s AND industry = %s
+        """
+        cur.execute(sql, (int(year), industry))
+        rows = cur.fetchall()
+
+        for r in rows:
+            peers.append({
+                "idx": r[0],
+                "name": r[1],
+                "roe": float(r[2]) if r[2] is not None else 0,
+                "debt_ratio": float(r[3]) if r[3] is not None else 0
+            })
+
+    else:  # ✅ 업종 값이 NULL이면 fallback 처리
+        # 1) 같은 규모(size)로 fallback
+        if size:
+            sql = """
+                SELECT idx, name, roe, debt_ratio
+                FROM financialstatements6
+                WHERE year = %s AND size = %s
+            """
+            cur.execute(sql, (int(year), size))
+            rows = cur.fetchall()
+
+            for r in rows:
+                peers.append({
+                    "idx": r[0],
+                    "name": r[1],
+                    "roe": float(r[2]) if r[2] is not None else 0,
+                    "debt_ratio": float(r[3]) if r[3] is not None else 0
+                })
+
+        # 2) 그래도 못 찾으면 자기 자신만 반환
+        if not peers:
+            sql = """
+                SELECT idx, name, roe, debt_ratio
+                FROM financialstatements6
+                WHERE year = %s AND idx = %s
+            """
+            cur.execute(sql, (int(year), company_id))
+            r = cur.fetchone()
+            if r:
+                peers.append({
+                    "idx": r[0],
+                    "name": r[1],
+                    "roe": float(r[2]) if r[2] is not None else 0,
+                    "debt_ratio": float(r[3]) if r[3] is not None else 0
+                })
+
+    cur.close()
     return JSONResponse({"peers": peers})
+
 
 
 # 수익성·성장성 (개별기업, 연도별)
@@ -765,9 +805,24 @@ async def report_page(request: Request):
 
 
 
+import math
+
+def safe_number(v):
+    try:
+        if v is None:
+            return 0.0
+        n = float(v)
+        if math.isnan(n) or math.isinf(n):
+            return 0.0
+        return n
+    except Exception:
+        return 0.0
+
+
 @app.get("/api/drivers")
 def get_drivers(year: int, company_id: int):
     cur = conn.cursor()
+
     # 1) 기업 값 + 업종 가져오기
     cur.execute("""
         SELECT
@@ -787,15 +842,15 @@ def get_drivers(year: int, company_id: int):
         cur.close()
         return JSONResponse({"labels": [], "effects": [], "industry_avgs": []})
 
-    # 기업 값
+    # 기업 값 안전 변환
     roe, optl, ffoeq, profit_growth, ap_turnover, icr, industry = row
     effects = [
-        float(roe) if roe is not None else 0.0,
-        float(optl) if optl is not None else 0.0,
-        float(ffoeq) if ffoeq is not None else 0.0,
-        float(profit_growth) if profit_growth is not None else 0.0,
-        float(ap_turnover) if ap_turnover is not None else 0.0,
-        float(icr) if icr is not None else 0.0
+        safe_number(roe),
+        safe_number(optl),
+        safe_number(ffoeq),
+        safe_number(profit_growth),
+        safe_number(ap_turnover),
+        safe_number(icr)
     ]
 
     # 2) 업종 평균 값
@@ -813,7 +868,8 @@ def get_drivers(year: int, company_id: int):
     avg_row = cur.fetchone()
     cur.close()
 
-    industry_avgs = [float(v) if v is not None else 0.0 for v in avg_row]
+    # 업종 평균 안전 변환
+    industry_avgs = [safe_number(v) for v in (avg_row or [])]
 
     labels = [
         "자기자본이익률(ROE)",
@@ -829,6 +885,7 @@ def get_drivers(year: int, company_id: int):
         "effects": effects,
         "industry_avgs": industry_avgs
     })
+
 
 
 
